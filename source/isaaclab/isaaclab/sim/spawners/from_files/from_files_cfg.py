@@ -143,7 +143,9 @@ class GroundPlaneCfg(SpawnerCfg):
 
     func: Callable = from_files.spawn_ground_plane
 
-    usd_path: str = f"{ISAAC_NUCLEUS_DIR}/Environments/Grid/default_environment.usd"
+    # usd_path: str = f"{ISAAC_NUCLEUS_DIR}/Environments/Grid/default_environment.usd"
+    # usd_path: str = "/home/laji/Wss/e2e_swarm/swarm_rl/assets/default_environment/default_environment.usd"
+    usd_path: str = "/home/laji/Wss/e2e_swarm/swarm_rl/assets/flat_plane/flat_plane.usd"
     """Path to the USD file to spawn asset from. Defaults to the grid-world ground plane."""
 
     color: tuple[float, float, float] | None = (0.0, 0.0, 0.0)

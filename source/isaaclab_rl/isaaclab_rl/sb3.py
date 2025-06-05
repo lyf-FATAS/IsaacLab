@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import gymnasium as gym
 import numpy as np
+import time
 import torch
 import torch.nn as nn  # noqa: F401
+from loguru import logger
 from typing import Any
 
 from stable_baselines3.common.utils import constant_fn
@@ -151,7 +153,7 @@ class Sb3VecEnvWrapper(VecEnv):
         observation_space = self.unwrapped.single_observation_space["policy"]
         action_space = self.unwrapped.single_action_space
         if isinstance(action_space, gym.spaces.Box) and not action_space.is_bounded("both"):
-            action_space = gym.spaces.Box(low=-100, high=100, shape=action_space.shape)
+            action_space = gym.spaces.Box(low=-1, high=1, shape=action_space.shape)
 
         # initialize vec-env
         VecEnv.__init__(self, self.num_envs, observation_space, action_space)
@@ -212,18 +214,26 @@ class Sb3VecEnvWrapper(VecEnv):
         return self._process_obs(obs_dict)
 
     def step_async(self, actions):  # noqa: D102
+        self.start_step = time.perf_counter()
+
         # convert input to numpy array
+        start_preprocess = time.perf_counter()
         if not isinstance(actions, torch.Tensor):
             actions = np.asarray(actions)
             actions = torch.from_numpy(actions).to(device=self.sim_device, dtype=torch.float32)
         else:
             actions = actions.to(device=self.sim_device, dtype=torch.float32)
+        end_preprocess = time.perf_counter()
+        self.t_preprocess = end_preprocess - start_preprocess
         # convert to tensor
         self._async_actions = actions
 
     def step_wait(self) -> VecEnvStepReturn:  # noqa: D102
         # record step information
+        start_step = time.perf_counter()
         obs_dict, rew, terminated, truncated, extras = self.env.step(self._async_actions)
+        end_step = time.perf_counter()
+        t_step = end_step - start_step
         # update episode un-discounted return and length
         self._ep_rew_buf += rew
         self._ep_len_buf += 1
@@ -233,17 +243,27 @@ class Sb3VecEnvWrapper(VecEnv):
 
         # convert data types to numpy depending on backend
         # note: ManagerBasedRLEnv uses torch backend (by default).
-        obs = self._process_obs(obs_dict)
+        start_postprocess = time.perf_counter()
+        obs = self._pzrocess_obs(obs_dict)
         rew = rew.detach().cpu().numpy()
         terminated = terminated.detach().cpu().numpy()
         truncated = truncated.detach().cpu().numpy()
         dones = dones.detach().cpu().numpy()
         # convert extra information to list of dicts
         infos = self._process_extras(obs, terminated, truncated, extras, reset_ids)
+        end_postprocess = time.perf_counter()
+        t_postprocess = end_postprocess - start_postprocess
 
         # reset info for terminated environments
         self._ep_rew_buf[reset_ids] = 0
         self._ep_len_buf[reset_ids] = 0
+
+        self.end_step = time.perf_counter()
+        t_wrapper_step = self.end_step - self.start_step
+        logger.debug(f"Sb3VecEnvWrapper step takes {t_wrapper_step:.5f}s")
+        logger.debug(f">>> Preprocess takes up {self.t_preprocess / t_wrapper_step * 100:.2f}%, {self.t_preprocess:.5f}s")
+        logger.debug(f">>> Env step takes up {t_step / t_wrapper_step * 100:.2f}%, {t_step:.5f}s")
+        logger.debug(f">>> Postprocess takes up {t_postprocess / t_wrapper_step * 100:.2f}%, {t_postprocess:.5f}s\n")
 
         return obs, rew, dones, infos
 
