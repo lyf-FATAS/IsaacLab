@@ -420,14 +420,16 @@ class DirectRLEnv(gym.Env):
 
         end_step = time.perf_counter()
         t_step = end_step - start_step
+        logger.debug("")
         logger.debug(f"DirectRLEnv step takes {t_step:.5f}s")
         logger.debug(f">>> _pre_physics_step takes up {t_process_actions / t_step * 100:.2f}%, {t_process_actions:.5f}s")
-        logger.debug(f">>> _apply_action takes up {t_apply_action / t_step * 100:.2f}%, {t_apply_action / self.cfg.decimation:.5f}s")
-        logger.debug(f">>> Simulation step takes up {t_physics_step / t_step * 100:.2f}%, {t_physics_step / self.cfg.decimation:.5f}s")
+        logger.debug(f">>> _apply_action takes up {t_apply_action / t_step * 100:.2f}%, {t_apply_action / self.cfg.decimation:.5f}s / call")
+        logger.debug(f">>> Simulation step takes up {t_physics_step / t_step * 100:.2f}%, {t_physics_step / self.cfg.decimation:.5f}s / call")
         logger.debug(f">>> Render takes up {t_render / t_step * 100:.2f}%")
         logger.debug(f">>> _get_dones and _get_rewards takes up {t_get_dones_rewards / t_step * 100:.2f}%")
         logger.debug(f">>> Reset envs takes up {t_reset / t_step * 100:.2f}%")
-        logger.debug(f">>> _get_observations takes up {t_get_observations / t_step * 100:.2f}%\n")
+        logger.debug(f">>> _get_observations takes up {t_get_observations / t_step * 100:.2f}%")
+        logger.debug("\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Env Step Split Line ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
         # return observations, rewards, resets and extras
         return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras

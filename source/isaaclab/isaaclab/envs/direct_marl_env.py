@@ -9,6 +9,8 @@ import builtins
 import gymnasium as gym
 import inspect
 import math
+import time
+from loguru import logger
 import numpy as np
 import torch
 import weakref
@@ -16,6 +18,7 @@ from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import MISSING
 from typing import Any, ClassVar
+from loguru import logger
 
 import isaacsim.core.utils.torch as torch_utils
 import omni.kit.app
@@ -350,6 +353,8 @@ class DirectMARLEnv(gym.Env):
         Returns:
             A tuple containing the observations, rewards, resets (terminated and truncated) and extras (keyed by the agent ID).
         """
+        start_step = time.perf_counter()
+
         actions = {agent: action.to(self.device) for agent, action in actions.items()}
 
         # add action noise
@@ -358,26 +363,40 @@ class DirectMARLEnv(gym.Env):
                 if agent in self._action_noise_model:
                     actions[agent] = self._action_noise_model[agent].apply(action)
         # process actions
+        start_process_actions = time.perf_counter()
         self._pre_physics_step(actions)
+        end_process_actions = time.perf_counter()
+        t_process_actions = end_process_actions - start_process_actions
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
         is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
 
         # perform physics stepping
+        t_apply_action, t_physics_step, t_render = 0.0, 0.0, 0.0
         for _ in range(self.cfg.decimation):
             self._sim_step_counter += 1
             # set actions into buffers
+            start_apply_action = time.perf_counter()
             self._apply_action()
+            end_apply_action = time.perf_counter()
+            t_apply_action += end_apply_action - start_apply_action
+
+            start_physics_step = time.perf_counter()
             # set actions into simulator
             self.scene.write_data_to_sim()
             # simulate
             self.sim.step(render=False)
+            end_physics_step = time.perf_counter()
+            t_physics_step += end_physics_step - start_physics_step
             # render between steps only if the GUI or an RTX sensor needs it
             # note: we assume the render interval to be the shortest accepted rendering interval.
             #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
             if self._sim_step_counter % self.cfg.sim.render_interval == 0 and is_rendering:
+                start_render = time.perf_counter()
                 self.sim.render()
+                end_render = time.perf_counter()
+                t_render += end_render - start_render
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
 
@@ -386,14 +405,20 @@ class DirectMARLEnv(gym.Env):
         self.episode_length_buf += 1  # step in current episode (per env)
         self.common_step_counter += 1  # total step (common for all envs)
 
+        start_ = time.perf_counter()
         self.terminated_dict, self.time_out_dict = self._get_dones()
         self.reset_buf[:] = math.prod(self.terminated_dict.values()) | math.prod(self.time_out_dict.values())
         self.reward_dict = self._get_rewards()
+        end_ = time.perf_counter()
+        t_get_dones_rewards = end_ - start_
 
         # -- reset envs that terminated/timed-out and log the episode information
+        start_reset = time.perf_counter()
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
             self._reset_idx(reset_env_ids)
+        end_reset = time.perf_counter()
+        t_reset = end_reset - start_reset
 
         # post-step: step interval event
         if self.cfg.events:
@@ -401,7 +426,10 @@ class DirectMARLEnv(gym.Env):
                 self.event_manager.apply(mode="interval", dt=self.step_dt)
 
         # update observations and the list of current agents (sorted as in possible_agents)
+        start_get_observations = time.perf_counter()
         self.obs_dict = self._get_observations()
+        end_get_observations = time.perf_counter()
+        t_get_observations = end_get_observations - start_get_observations
         self.agents = [agent for agent in self.possible_agents if agent in self.obs_dict]
 
         # add observation noise
@@ -410,6 +438,19 @@ class DirectMARLEnv(gym.Env):
             for agent, obs in self.obs_dict.items():
                 if agent in self._observation_noise_model:
                     self.obs_dict[agent] = self._observation_noise_model[agent].apply(obs)
+
+        end_step = time.perf_counter()
+        t_step = end_step - start_step
+        logger.debug("")
+        logger.debug(f"DirectMARLEnv step takes {t_step:.5f}s")
+        logger.debug(f">>> _pre_physics_step takes up {t_process_actions / t_step * 100:.2f}%, {t_process_actions:.5f}s")
+        logger.debug(f">>> _apply_action takes up {t_apply_action / t_step * 100:.2f}%, {t_apply_action / self.cfg.decimation:.5f}s / call")
+        logger.debug(f">>> Simulation step takes up {t_physics_step / t_step * 100:.2f}%, {t_physics_step / self.cfg.decimation:.5f}s / call")
+        logger.debug(f">>> Render takes up {t_render / t_step * 100:.2f}%")
+        logger.debug(f">>> _get_dones and _get_rewards takes up {t_get_dones_rewards / t_step * 100:.2f}%")
+        logger.debug(f">>> Reset envs takes up {t_reset / t_step * 100:.2f}%")
+        logger.debug(f">>> _get_observations takes up {t_get_observations / t_step * 100:.2f}%")
+        logger.debug("\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Env Step Split Line ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
         # return observations, rewards, resets and extras
         return self.obs_dict, self.reward_dict, self.terminated_dict, self.time_out_dict, self.extras
